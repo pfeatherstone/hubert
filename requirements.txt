@@ -1,4 +1,7 @@
 numpy
 torch
+torchcodec
 einops
 transformers
+onnxruntime
+onnxscript
