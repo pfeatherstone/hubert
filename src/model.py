@@ -1,4 +1,5 @@
 from   copy import deepcopy
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,8 +24,8 @@ def repeat(m, count):
     return nn.Sequential(*[deepcopy(m) for _ in range(count)])
 
 
-def Conv(c1, c2, k, s, p=0,g=1,norm="none"):
-    return nn.Sequential(nn.Conv1d(c1,c2,k,s,padding=p,groups=g,bias=False),
+def Conv(c1, c2, k, s, p=0,norm="none"):
+    return nn.Sequential(nn.Conv1d(c1,c2,k,s,padding=p,bias=False),
                          nn.GroupNorm(c2,c2) if norm=="group" else nn.Identity(),
                          nn.GELU())
 
@@ -110,6 +111,53 @@ def export_onnx(net: nn.Module, onnx_path: str, check:bool = True):
         out0   = net(x) 
         out1,  = netOrt.run(None, {'audio': x.numpy()})
         torch.testing.assert_close(out0, torch.from_numpy(out1), atol=1e-4, rtol=1e-2)
+
+
+def hubert_layers_(net: nn.Module):
+    types = (nn.Linear, nn.Conv1d, nn.GroupNorm, nn.LayerNorm)
+    if isinstance(net, types): 
+        yield net
+    else:
+        for m in net.children():
+            yield from hubert_layers_(m)
+
+
+def get_parameters_(net):
+    params = []
+    for l in hubert_layers_(net):
+        if isinstance(l, nn.Conv1d):
+            params.append(l.weight.transpose(1,2).contiguous())
+            if l.bias is not None: params.append(l.bias)
+        else:
+            params.append(l.weight)
+            if l.bias is not None: params.append(l.bias)
+    return params
+
+
+@torch.no_grad()
+def save_raw(net, file:str):
+    with open(file, 'wb') as f:
+        for p in get_parameters_(net):
+            p.numpy().tofile(f)
+
+
+def write_to_cpp_file(data, file:str, name:str, values_per_line:int = 8):
+    with open(file, 'wt') as f:
+        f.write("#include <cstddef>\n\n")
+        f.write(f"alignas(32) extern const float {name}_WEIGHTS[] = {{\n")
+        for i in range(0, len(data), values_per_line):
+            row = data[i:i+values_per_line]
+            literals = ", ".join(f"{np.float32(v).item():.9g}f" for v in row)
+            f.write(f"        {literals},\n")
+
+        f.write("};\n\n")
+        f.write(f"extern const std::size_t {name}_SIZE = sizeof({name}_WEIGHTS) / sizeof(float);\n\n")
+
+
+@torch.no_grad()
+def save_cpp(net, file:str, name:str, values_per_line:int = 8):
+    data = np.concatenate([p.numpy().ravel() for p in get_parameters_(net)])
+    write_to_cpp_file(data, file, name, values_per_line)
 
 
 ##########################################################################################################
