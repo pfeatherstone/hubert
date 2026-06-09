@@ -113,35 +113,21 @@ def export_onnx(net: nn.Module, onnx_path: str, check:bool = True):
         torch.testing.assert_close(out0, torch.from_numpy(out1), atol=1e-4, rtol=1e-2)
 
 
-def hubert_layers_(net: nn.Module):
-    types = (nn.Linear, nn.Conv1d, nn.GroupNorm, nn.LayerNorm)
-    if isinstance(net, types): 
-        yield net
-    else:
-        for m in net.children():
-            yield from hubert_layers_(m)
-
-
-def get_parameters_(net):
-    params = []
-    for l in hubert_layers_(net):
-        if isinstance(l, nn.Conv1d):
-            params.append(l.weight.transpose(1,2).contiguous())
-            if l.bias is not None: params.append(l.bias)
-        else:
-            params.append(l.weight)
-            if l.bias is not None: params.append(l.bias)
-    return params
-
-
 @torch.no_grad()
 def save_raw(net, file:str):
     with open(file, 'wb') as f:
-        for p in get_parameters_(net):
-            p.numpy().tofile(f)
+        for p in net.parameters():
+            if p.dim()==3: p.transpose(1,2).contiguous().numpy().tofile(f)
+            else: p.numpy().tofile(f)
 
 
-def write_to_cpp_file(data, file:str, name:str, values_per_line:int = 8):
+@torch.no_grad()
+def save_cpp(net, file:str, name:str, values_per_line:int = 8):
+    data = []
+    for p in net.parameters():
+        if p.dim()==3: data.append(p.transpose(1,2).contiguous().flatten().numpy())
+        else: data.append(p.flatten().numpy())
+    data = np.concatenate(data)
     with open(file, 'wt') as f:
         f.write("#include <cstddef>\n\n")
         f.write(f"alignas(32) extern const float {name}_WEIGHTS[] = {{\n")
@@ -152,13 +138,7 @@ def write_to_cpp_file(data, file:str, name:str, values_per_line:int = 8):
 
         f.write("};\n\n")
         f.write(f"extern const std::size_t {name}_SIZE = sizeof({name}_WEIGHTS) / sizeof(float);\n\n")
-
-
-@torch.no_grad()
-def save_cpp(net, file:str, name:str, values_per_line:int = 8):
-    data = np.concatenate([p.numpy().ravel() for p in get_parameters_(net)])
-    write_to_cpp_file(data, file, name, values_per_line)
-
+        
 
 ##########################################################################################################
 ##########################################################################################################
